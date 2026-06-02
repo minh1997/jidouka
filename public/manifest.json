@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Jidouka — Record & Replay",
+  "version": "0.1.0",
+  "description": "Record your browser actions and replay them like an automation.",
+  "permissions": ["sidePanel", "tabs", "scripting", "storage", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open Jidouka panel"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}
