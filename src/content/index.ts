@@ -1,9 +1,17 @@
-import type { ExtMessage, RecordedAction, RecordingStatus } from '../shared/types';
+import type { ExtMessage, ElementFingerprint, RecordedAction, RecordingStatus } from '../shared/types';
 import { STORAGE_KEYS } from '../shared/types';
-import { buildSelector } from './selector';
+import { buildElementFingerprint, primarySelector, resolveByFingerprint } from './fingerprint';
 
 let recording = false;
 let lastActionTime = Date.now();
+
+// Debounced "type" buffering: we collapse a burst of keystrokes in one field
+// into a single type action when focus leaves or another action happens.
+let pendingInput: {
+  el: HTMLInputElement | HTMLTextAreaElement;
+  fingerprint: ElementFingerprint | null;
+} | null = null;
+let pendingInputTimer: number | null = null;
 
 function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -16,98 +24,168 @@ function nextDelay(): number {
   return delay;
 }
 
-function emit(partial: Omit<RecordedAction, 'id' | 'url' | 'delay' | 'timestamp'>): void {
+function describeRecordedAction(
+  type: RecordedAction['type'],
+  fp: ElementFingerprint | null,
+  value?: string,
+): string {
+  const target = fp?.text || fp?.ariaLabel || fp?.placeholder || fp?.tag || 'element';
+  switch (type) {
+    case 'click':
+      return `Click on "${target}"`;
+    case 'type':
+      return `Type "${value ?? ''}" in "${fp?.placeholder || fp?.ariaLabel || target}"`;
+    case 'select':
+      return `Select "${value ?? ''}" in "${target}"`;
+    case 'submit':
+      return `Submit "${target}"`;
+    case 'key':
+      return `Press ${value} on "${target}"`;
+    case 'navigate':
+      return `Go to ${value ?? ''}`;
+    default:
+      return `${type} on "${target}"`;
+  }
+}
+
+function emit(partial: {
+  type: RecordedAction['type'];
+  fingerprint: ElementFingerprint | null;
+  value?: string;
+  key?: string;
+  isParam?: boolean;
+}): void {
   const action: RecordedAction = {
     id: uid(),
+    type: partial.type,
+    fingerprint: partial.fingerprint,
+    selector: primarySelector(partial.fingerprint),
+    label: describeRecordedAction(partial.type, partial.fingerprint, partial.value),
+    value: partial.value,
+    key: partial.key,
+    isParam: partial.isParam,
     url: location.href,
+    pageTitle: document.title,
     delay: nextDelay(),
     timestamp: Date.now(),
-    ...partial,
   };
   const msg: ExtMessage = { type: 'ACTION_RECORDED', action };
   chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
-function elementLabel(el: Element): string {
-  const tag = el.tagName.toLowerCase();
-  const text = (el.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 40);
-  const aria = el.getAttribute('aria-label');
-  const name = (el as HTMLInputElement).name;
-  return aria || text || name || tag;
-}
-
 // --- Recording listeners (capture phase so we see events before the page) ---
+
+function flushPendingInput(): void {
+  if (pendingInputTimer != null) {
+    clearTimeout(pendingInputTimer);
+    pendingInputTimer = null;
+  }
+  if (!pendingInput) return;
+  const { el, fingerprint } = pendingInput;
+  pendingInput = null;
+  emit({ type: 'type', fingerprint, value: el.value, isParam: true });
+}
 
 function onClick(e: MouseEvent): void {
   const target = e.target as Element | null;
   if (!target) return;
-  emit({ type: 'click', selector: buildSelector(target), label: elementLabel(target) });
-}
-
-function onChange(e: Event): void {
-  const target = e.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null;
-  if (!target) return;
-  const isCheckable =
-    target instanceof HTMLInputElement && (target.type === 'checkbox' || target.type === 'radio');
-  emit({
-    type: 'change',
-    selector: buildSelector(target),
-    label: elementLabel(target),
-    value: isCheckable ? String((target as HTMLInputElement).checked) : target.value,
-  });
+  // Commit any buffered typing before recording the click.
+  flushPendingInput();
+  emit({ type: 'click', fingerprint: buildElementFingerprint(target) });
 }
 
 function onInput(e: Event): void {
   const target = e.target as HTMLInputElement | HTMLTextAreaElement | null;
   if (!target) return;
-  // Skip checkboxes/radios; those are handled by 'change'.
   if (target instanceof HTMLInputElement && (target.type === 'checkbox' || target.type === 'radio'))
-    return;
-  emit({
-    type: 'input',
-    selector: buildSelector(target),
-    label: elementLabel(target),
-    value: target.value,
-  });
+    return; // handled by change/click
+
+  // If focus moved to a different element, flush the previous one first.
+  if (pendingInput && pendingInput.el !== target) flushPendingInput();
+
+  pendingInput = { el: target, fingerprint: buildElementFingerprint(target) };
+  if (pendingInputTimer != null) clearTimeout(pendingInputTimer);
+  pendingInputTimer = window.setTimeout(flushPendingInput, 600);
+}
+
+function onChange(e: Event): void {
+  const target = e.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null;
+  if (!target) return;
+  if (target instanceof HTMLSelectElement) {
+    flushPendingInput();
+    emit({ type: 'select', fingerprint: buildElementFingerprint(target), value: target.value });
+  } else if (
+    target instanceof HTMLInputElement &&
+    (target.type === 'checkbox' || target.type === 'radio')
+  ) {
+    flushPendingInput();
+    emit({
+      type: 'click',
+      fingerprint: buildElementFingerprint(target),
+      value: String(target.checked),
+    });
+  }
 }
 
 function onSubmit(e: Event): void {
   const target = e.target as Element | null;
   if (!target) return;
-  emit({ type: 'submit', selector: buildSelector(target), label: elementLabel(target) });
+  flushPendingInput();
+  emit({ type: 'submit', fingerprint: buildElementFingerprint(target) });
 }
 
 function onKeydown(e: KeyboardEvent): void {
   // Only record meaningful keys to avoid noise from every keystroke.
   if (!['Enter', 'Tab', 'Escape'].includes(e.key)) return;
   const target = e.target as Element | null;
+  // Enter inside a text field usually submits; flush the typed value first.
+  flushPendingInput();
   emit({
-    type: 'keydown',
-    selector: target ? buildSelector(target) : '',
-    label: `Key: ${e.key}`,
+    type: 'key',
+    fingerprint: target ? buildElementFingerprint(target) : null,
     key: e.key,
+    value: e.key,
   });
+}
+
+// SPA navigation detection: many sites change the URL without a full reload.
+let lastUrl = location.href;
+let urlPoll: number | null = null;
+
+function pollUrl(): void {
+  if (location.href !== lastUrl) {
+    lastUrl = location.href;
+    flushPendingInput();
+    emit({ type: 'navigate', fingerprint: null, value: location.href });
+  }
 }
 
 function startRecording(): void {
   if (recording) return;
   recording = true;
   lastActionTime = Date.now();
+  lastUrl = location.href;
   document.addEventListener('click', onClick, true);
   document.addEventListener('change', onChange, true);
   document.addEventListener('input', onInput, true);
   document.addEventListener('submit', onSubmit, true);
   document.addEventListener('keydown', onKeydown, true);
+  urlPoll = window.setInterval(pollUrl, 500);
 }
 
 function stopRecording(): void {
   if (!recording) return;
+  flushPendingInput();
   recording = false;
   document.removeEventListener('click', onClick, true);
   document.removeEventListener('change', onChange, true);
   document.removeEventListener('input', onInput, true);
   document.removeEventListener('submit', onSubmit, true);
   document.removeEventListener('keydown', onKeydown, true);
+  if (urlPoll != null) {
+    clearInterval(urlPoll);
+    urlPoll = null;
+  }
 }
 
 // --- Replay -----------------------------------------------------------------
@@ -147,41 +225,67 @@ function setNativeValue(el: HTMLInputElement | HTMLTextAreaElement, value: strin
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+// Resolve an action's target: try the primary selector first, then fall back
+// to fuzzy fingerprint scoring (survives DOM re-renders / changed selectors).
+async function resolveTarget(action: RecordedAction): Promise<HTMLElement | null> {
+  if (action.selector) {
+    const el = (await waitForElement(action.selector)) as HTMLElement | null;
+    if (el) return el;
+  }
+  if (action.fingerprint) {
+    const fuzzy = resolveByFingerprint(action.fingerprint);
+    if (fuzzy) return fuzzy;
+    // Give a re-rendering page a moment, then retry fuzzy once.
+    await sleep(400);
+    return resolveByFingerprint(action.fingerprint);
+  }
+  return null;
+}
+
 async function performAction(action: RecordedAction): Promise<void> {
   if (action.type === 'navigate') {
     if (action.value && action.value !== location.href) location.href = action.value;
     return;
   }
-  const el = (await waitForElement(action.selector)) as HTMLElement | null;
+
+  const el = await resolveTarget(action);
   if (!el) {
-    console.warn('[jidouka] replay: element not found for', action.selector);
+    console.warn('[jidouka] replay: element not found for', action.label);
     return;
   }
   el.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior });
 
   switch (action.type) {
     case 'click':
-      el.click();
-      break;
-    case 'input':
-    case 'change':
       if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')) {
-        el.checked = action.value === 'true';
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-      } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        const want = action.value === 'true';
+        if (el.checked !== want) el.click();
+      } else {
+        el.click();
+      }
+      break;
+    case 'type':
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        el.focus();
         setNativeValue(el, action.value ?? '');
-      } else if (el instanceof HTMLSelectElement) {
+      } else if ((el as HTMLElement).isContentEditable) {
+        (el as HTMLElement).textContent = action.value ?? '';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      break;
+    case 'select':
+      if (el instanceof HTMLSelectElement) {
         el.value = action.value ?? '';
         el.dispatchEvent(new Event('change', { bubbles: true }));
       }
       break;
     case 'submit':
       if (el instanceof HTMLFormElement) el.requestSubmit();
+      else el.closest('form')?.requestSubmit();
       break;
-    case 'keydown':
-      el.dispatchEvent(
-        new KeyboardEvent('keydown', { key: action.key, bubbles: true }),
-      );
+    case 'key':
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: action.key, bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keyup', { key: action.key, bubbles: true }));
       break;
   }
 }

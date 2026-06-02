@@ -2,11 +2,12 @@ import type { ActionType, RecordedAction } from '../shared/types';
 
 const ICONS: Record<ActionType, string> = {
   click: '👆',
-  input: '⌨️',
-  change: '🔁',
+  type: '⌨️',
+  select: '🔽',
   submit: '📤',
-  keydown: '🔑',
+  key: '🔑',
   navigate: '🧭',
+  scroll: '🖱️',
 };
 
 export function ActionList({ actions }: { actions: RecordedAction[] }) {
