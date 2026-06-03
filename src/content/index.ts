@@ -169,11 +169,11 @@ function startRecording(): void {
   lastActionTime = Date.now();
   lastUrl = location.href;
   console.info('[jidouka] recording armed on', location.href);
-  window.addEventListener('click', onClick, true);
-  window.addEventListener('change', onChange, true);
-  window.addEventListener('input', onInput, true);
-  window.addEventListener('submit', onSubmit, true);
-  window.addEventListener('keydown', onKeydown, true);
+  document.addEventListener('click', onClick, true);
+  document.addEventListener('change', onChange, true);
+  document.addEventListener('input', onInput, true);
+  document.addEventListener('submit', onSubmit, true);
+  document.addEventListener('keydown', onKeydown, true);
   urlPoll = window.setInterval(pollUrl, 500);
 }
 
@@ -182,11 +182,11 @@ function stopRecording(): void {
   flushPendingInput();
   recording = false;
   console.info('[jidouka] recording stopped on', location.href);
-  window.removeEventListener('click', onClick, true);
-  window.removeEventListener('change', onChange, true);
-  window.removeEventListener('input', onInput, true);
-  window.removeEventListener('submit', onSubmit, true);
-  window.removeEventListener('keydown', onKeydown, true);
+  document.removeEventListener('click', onClick, true);
+  document.removeEventListener('change', onChange, true);
+  document.removeEventListener('input', onInput, true);
+  document.removeEventListener('submit', onSubmit, true);
+  document.removeEventListener('keydown', onKeydown, true);
   if (urlPoll != null) {
     clearInterval(urlPoll);
     urlPoll = null;
