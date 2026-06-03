@@ -251,16 +251,16 @@ async function resolveTarget(action: RecordedAction): Promise<HTMLElement | null
   return null;
 }
 
-async function performAction(action: RecordedAction): Promise<void> {
+async function performAction(action: RecordedAction): Promise<boolean> {
   if (action.type === 'navigate') {
     if (action.value && action.value !== location.href) location.href = action.value;
-    return;
+    return true;
   }
 
   const el = await resolveTarget(action);
   if (!el) {
     console.warn('[jidouka] replay: element not found for', action.label);
-    return;
+    return false;
   }
   el.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior });
 
@@ -297,6 +297,8 @@ async function performAction(action: RecordedAction): Promise<void> {
       el.dispatchEvent(new KeyboardEvent('keyup', { key: action.key, bubbles: true }));
       break;
   }
+
+  return true;
 }
 
 async function runReplay(actions: RecordedAction[]): Promise<void> {
@@ -378,6 +380,11 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
     case 'CONTENT_STOP_REPLAY':
       stopReplay();
       break;
+    case 'CONTENT_EXECUTE_ACTION':
+      void performAction(message.action)
+        .then((success) => sendResponse({ success }))
+        .catch((err) => sendResponse({ success: false, error: String(err) }));
+      return true;
     case 'CONTENT_REPLAY':
       void runReplay(message.actions);
       break;

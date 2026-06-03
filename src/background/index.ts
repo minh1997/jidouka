@@ -28,11 +28,6 @@ async function setWorkflows(workflows: Workflow[]): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.workflows]: workflows });
 }
 
-async function getReplayActions(): Promise<RecordedAction[]> {
-  const data = await chrome.storage.local.get(STORAGE_KEYS.replayActions);
-  return (data[STORAGE_KEYS.replayActions] as RecordedAction[]) ?? [];
-}
-
 async function setReplayActions(actions: RecordedAction[]): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.replayActions]: actions });
 }
@@ -131,18 +126,16 @@ async function getContentSessionState(tabId: number | undefined): Promise<{
   shouldReplay: boolean;
   actions: RecordedAction[];
 }> {
-  const [status, replayActions, recordingTabId, replayTabId] = await Promise.all([
+  const [status, recordingTabId] = await Promise.all([
     getStatus(),
-    getReplayActions(),
     getRecordingTabId(),
-    getReplayTabId(),
   ]);
 
   return {
     status,
-    actions: replayActions,
+    actions: [],
     shouldRecord: status === 'recording' && tabId != null && recordingTabId === tabId,
-    shouldReplay: status === 'replaying' && tabId != null && replayTabId === tabId,
+    shouldReplay: false,
   };
 }
 
@@ -181,17 +174,112 @@ function buildWorkflow(actions: RecordedAction[]): Workflow {
   };
 }
 
-async function beginReplay(tabId: number, actions: RecordedAction[]): Promise<void> {
-  if (actions.length === 0) return;
+async function beginReplay(tabId: number): Promise<void> {
   await Promise.all([
     setStatus('replaying'),
     setReplayTabId(tabId),
     setRecordingTabId(null),
-    setReplayActions(actions),
+    setReplayActions([]),
     resetReplayCursor(),
   ]);
   await broadcastState();
-  await sendToTab(tabId, { type: 'CONTENT_REPLAY', actions });
+}
+
+async function waitForTabComplete(tabId: number, timeout = 15_000): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve(false);
+    }, timeout);
+
+    const listener = (updatedTabId: number, info: chrome.tabs.TabChangeInfo) => {
+      if (updatedTabId !== tabId || info.status !== 'complete' || settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve(true);
+    };
+
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+async function waitForNavigationOrTimeout(tabId: number, timeout = 800): Promise<void> {
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    }, timeout);
+
+    const listener = (updatedTabId: number, info: chrome.tabs.TabChangeInfo) => {
+      if (updatedTabId !== tabId || info.status !== 'complete' || settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    };
+
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+async function executeWorkflowStep(tabId: number, step: RecordedAction): Promise<void> {
+  if (step.type === 'navigate') {
+    const nextUrl = step.value || step.url;
+    const currentTab = await chrome.tabs.get(tabId);
+    if (!nextUrl || currentTab.url === nextUrl) return;
+    await chrome.tabs.update(tabId, { url: nextUrl });
+    await waitForTabComplete(tabId);
+    await ensureContentScript(tabId);
+    return;
+  }
+
+  if (!(await ensureContentScript(tabId))) return;
+
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: 'CONTENT_EXECUTE_ACTION',
+      action: step,
+    } satisfies ExtMessage);
+  } catch {
+    // Clicks or submits that unload the page can close the message channel.
+  }
+
+  await waitForNavigationOrTimeout(tabId);
+}
+
+async function replayWorkflowSteps(tabId: number, workflow: Workflow): Promise<void> {
+  try {
+    if (workflow.startUrl) {
+      const currentTab = await chrome.tabs.get(tabId);
+      if (currentTab.url !== workflow.startUrl) {
+        await chrome.tabs.update(tabId, { url: workflow.startUrl });
+        await waitForTabComplete(tabId);
+      }
+      await ensureContentScript(tabId);
+    }
+
+    for (const step of workflow.steps) {
+      const [status, replayTabId] = await Promise.all([getStatus(), getReplayTabId()]);
+      if (status !== 'replaying' || replayTabId !== tabId) return;
+      await sleep(Math.min(step.delay, 3000));
+      await executeWorkflowStep(tabId, step);
+    }
+  } finally {
+    await Promise.all([
+      setStatus('idle'),
+      setReplayTabId(null),
+      setReplayActions([]),
+      resetReplayCursor(),
+    ]);
+    await broadcastState();
+  }
 }
 
 function isSameTarget(a: RecordedAction, b: RecordedAction): boolean {
@@ -298,7 +386,8 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
           if (!(await ensureContentScript(tab.id))) break;
           const workflow = workflows.find((item) => item.id === message.workflowId);
           if (!workflow) break;
-          await beginReplay(tab.id, workflow.steps);
+          await beginReplay(tab.id);
+          void replayWorkflowSteps(tab.id, workflow);
           break;
         }
         case 'DELETE_WORKFLOW': {

@@ -80,6 +80,7 @@ export type ExtMessage =
   | { type: 'CONTENT_START_RECORDING' }
   | { type: 'CONTENT_STOP_RECORDING' }
   | { type: 'CONTENT_STOP_REPLAY' }
+  | { type: 'CONTENT_EXECUTE_ACTION'; action: RecordedAction }
   | { type: 'CONTENT_REPLAY'; actions: RecordedAction[] };
 
 export const STORAGE_KEYS = {
