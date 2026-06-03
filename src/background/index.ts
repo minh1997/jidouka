@@ -28,10 +28,6 @@ async function setWorkflows(workflows: Workflow[]): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.workflows]: workflows });
 }
 
-async function setReplayActions(actions: RecordedAction[]): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEYS.replayActions]: actions });
-}
-
 async function getStatus(): Promise<RecordingStatus> {
   const data = await chrome.storage.local.get(STORAGE_KEYS.status);
   return (data[STORAGE_KEYS.status] as RecordingStatus) ?? 'idle';
@@ -65,10 +61,6 @@ async function getReplayTabId(): Promise<number | null> {
 
 async function setReplayTabId(tabId: number | null): Promise<void> {
   await setStoredTabId(STORAGE_KEYS.replayTabId, tabId);
-}
-
-async function resetReplayCursor(): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEYS.replayCursor]: 0 });
 }
 
 async function broadcastState(): Promise<void> {
@@ -120,22 +112,14 @@ async function ensureContentScript(tabId: number): Promise<boolean> {
   }
 }
 
-async function getContentSessionState(tabId: number | undefined): Promise<{
-  status: RecordingStatus;
-  shouldRecord: boolean;
-  shouldReplay: boolean;
-  actions: RecordedAction[];
-}> {
+async function getContentSessionState(tabId: number | undefined): Promise<{ shouldRecord: boolean }> {
   const [status, recordingTabId] = await Promise.all([
     getStatus(),
     getRecordingTabId(),
   ]);
 
   return {
-    status,
-    actions: [],
     shouldRecord: status === 'recording' && tabId != null && recordingTabId === tabId,
-    shouldReplay: false,
   };
 }
 
@@ -179,8 +163,6 @@ async function beginReplay(tabId: number): Promise<void> {
     setStatus('replaying'),
     setReplayTabId(tabId),
     setRecordingTabId(null),
-    setReplayActions([]),
-    resetReplayCursor(),
   ]);
   await broadcastState();
 }
@@ -275,8 +257,6 @@ async function replayWorkflowSteps(tabId: number, workflow: Workflow): Promise<v
     await Promise.all([
       setStatus('idle'),
       setReplayTabId(null),
-      setReplayActions([]),
-      resetReplayCursor(),
     ]);
     await broadcastState();
   }
@@ -319,12 +299,7 @@ async function appendAction(action: RecordedAction): Promise<void> {
 chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse) => {
   void (async () => {
     let response:
-      | {
-          status: RecordingStatus;
-          shouldRecord: boolean;
-          shouldReplay: boolean;
-          actions: RecordedAction[];
-        }
+      | { shouldRecord: boolean }
       | undefined;
 
     try {
@@ -345,9 +320,7 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
             setStatus('recording'),
             setRecordingTabId(tab.id),
             setReplayTabId(null),
-            setReplayActions([]),
             setActions([]),
-            resetReplayCursor(),
           ]);
           if (tab.url) {
             await appendAction(buildNavigateAction(tab.url, tab.title));
@@ -365,18 +338,12 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
           await Promise.all([
             setStatus('idle'),
             setRecordingTabId(null),
-            setReplayActions([]),
             setActions([]),
           ]);
           await sendToTab(recordingTabId, { type: 'CONTENT_STOP_RECORDING' });
           if (currentRecording.length > 0) {
             await setWorkflows([buildWorkflow(currentRecording), ...workflows].slice(0, MAX_WORKFLOWS));
           }
-          await broadcastState();
-          break;
-        }
-        case 'CLEAR_RECORDING': {
-          await Promise.all([setActions([]), setReplayActions([]), resetReplayCursor()]);
           await broadcastState();
           break;
         }
@@ -397,23 +364,9 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
           break;
         }
         case 'STOP_REPLAY': {
-          const replayTabId = await getReplayTabId();
           await Promise.all([
             setStatus('idle'),
             setReplayTabId(null),
-            setReplayActions([]),
-            resetReplayCursor(),
-          ]);
-          await sendToTab(replayTabId, { type: 'CONTENT_STOP_REPLAY' });
-          await broadcastState();
-          break;
-        }
-        case 'REPLAY_FINISHED': {
-          await Promise.all([
-            setStatus('idle'),
-            setReplayTabId(null),
-            setReplayActions([]),
-            resetReplayCursor(),
           ]);
           await broadcastState();
           break;
