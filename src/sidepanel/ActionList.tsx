@@ -10,7 +10,11 @@ const ICONS: Record<ActionType, string> = {
   scroll: '🖱️',
 };
 
-export function ActionList({ actions }: { actions: RecordedAction[] }) {
+export function ActionList({
+  actions,
+}: {
+  actions: RecordedAction[];
+}) {
   if (actions.length === 0) {
     return (
       <div className="empty">

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { ExtMessage, RecordedAction, RecordingStatus } from '../shared/types';
+import type { ExtMessage, RecordedAction, RecordingStatus, Workflow } from '../shared/types';
 import { ActionList } from './ActionList';
+import { WorkflowList } from './WorkflowList';
 
 function send(message: ExtMessage): void {
   chrome.runtime.sendMessage(message).catch(() => {});
@@ -8,19 +9,28 @@ function send(message: ExtMessage): void {
 
 export function App() {
   const [status, setStatus] = useState<RecordingStatus>('idle');
-  const [actions, setActions] = useState<RecordedAction[]>([]);
+  const [currentRecording, setCurrentRecording] = useState<RecordedAction[]>([]);
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [expandedWorkflowId, setExpandedWorkflowId] = useState<string | null>(null);
 
   useEffect(() => {
     const listener = (message: ExtMessage) => {
       if (message.type === 'STATE') {
         setStatus(message.status);
-        setActions(message.actions);
+        setCurrentRecording(message.currentRecording);
+        setWorkflows(message.workflows);
       }
     };
     chrome.runtime.onMessage.addListener(listener);
     send({ type: 'GET_STATE' });
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, []);
+
+  useEffect(() => {
+    if (expandedWorkflowId && !workflows.some((workflow) => workflow.id === expandedWorkflowId)) {
+      setExpandedWorkflowId(null);
+    }
+  }, [expandedWorkflowId, workflows]);
 
   const isRecording = status === 'recording';
   const isReplaying = status === 'replaying';
@@ -29,62 +39,71 @@ export function App() {
     send({ type: isRecording ? 'STOP_RECORDING' : 'START_RECORDING' });
   }, [isRecording]);
 
-  const replay = useCallback(() => {
-    send({ type: isReplaying ? 'STOP_REPLAY' : 'START_REPLAY' });
-  }, [isReplaying]);
+  const stopReplay = useCallback(() => send({ type: 'STOP_REPLAY' }), []);
 
-  const clear = useCallback(() => send({ type: 'CLEAR_RECORDING' }), []);
+  const replayWorkflow = useCallback((workflowId: string) => {
+    send({ type: 'REPLAY_WORKFLOW', workflowId });
+  }, []);
 
-  const exportJson = useCallback(() => {
-    const blob = new Blob([JSON.stringify(actions, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `jidouka-recording-${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [actions]);
+  const deleteWorkflow = useCallback((workflowId: string) => {
+    send({ type: 'DELETE_WORKFLOW', workflowId });
+  }, []);
+
+  const toggleExpand = useCallback((workflowId: string) => {
+    setExpandedWorkflowId((current) => (current === workflowId ? null : workflowId));
+  }, []);
 
   return (
     <div className="app">
-      <header className="header">
-        <div className="brand">
-          <span className="logo">⏺</span>
-          <div>
-            <h1>Jidouka</h1>
-            <p className="tagline">Record &amp; replay browser actions</p>
-          </div>
+      <header className="page-header">
+        <div>
+          <h1>Workflows</h1>
+          <p className="tagline">Save each recording as a workflow with all of its steps.</p>
         </div>
         <span className={`badge badge--${status}`}>{statusLabel(status)}</span>
       </header>
 
-      <div className="controls">
-        <button
-          className={`btn ${isRecording ? 'btn--stop' : 'btn--record'}`}
-          onClick={toggleRecording}
-          disabled={isReplaying}
-        >
-          {isRecording ? '■ Stop recording' : '⏺ Record'}
-        </button>
-        <button
-          className={`btn ${isReplaying ? 'btn--stop' : 'btn--play'}`}
-          onClick={replay}
-          disabled={isRecording || actions.length === 0}
-        >
-          {isReplaying ? '■ Stop' : '▶ Replay'}
-        </button>
-      </div>
+      <button
+        className={`record-button ${isRecording ? 'record-button--stop' : ''}`}
+        onClick={toggleRecording}
+        disabled={isReplaying}
+        type="button"
+      >
+        {isRecording ? 'Stop Recording' : 'Start Recording'}
+      </button>
 
-      <div className="controls controls--secondary">
-        <button className="btn btn--ghost" onClick={clear} disabled={actions.length === 0}>
-          Clear
+      {isReplaying && (
+        <button
+          className="record-button record-button--stop"
+          onClick={stopReplay}
+          type="button"
+        >
+          Stop Replay
         </button>
-        <button className="btn btn--ghost" onClick={exportJson} disabled={actions.length === 0}>
-          Export JSON
-        </button>
-      </div>
+      )}
 
-      <ActionList actions={actions} />
+      {isRecording && (
+        <section className="recording-panel">
+          <div className="section-header">
+            <h2>Current Recording</h2>
+            <span>{currentRecording.length} steps</span>
+          </div>
+          {currentRecording.length > 0 ? (
+            <ActionList actions={currentRecording} />
+          ) : (
+            <p className="recording-panel__hint">Interact with the page to capture workflow steps.</p>
+          )}
+        </section>
+      )}
+
+      <WorkflowList
+        workflows={workflows}
+        expandedWorkflowId={expandedWorkflowId}
+        isBusy={isRecording || isReplaying}
+        onDeleteWorkflow={deleteWorkflow}
+        onReplayWorkflow={replayWorkflow}
+        onToggleExpand={toggleExpand}
+      />
     </div>
   );
 }

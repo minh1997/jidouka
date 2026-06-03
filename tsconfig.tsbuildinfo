@@ -1,1 +1,1 @@
-{"root":["./src/background/index.ts","./src/content/fingerprint.ts","./src/content/index.ts","./src/shared/types.ts","./src/sidepanel/actionlist.tsx","./src/sidepanel/app.tsx","./src/sidepanel/main.tsx","./vite.config.ts"],"version":"5.9.3"}
+{"root":["./src/background/index.ts","./src/content/fingerprint.ts","./src/content/index.ts","./src/shared/types.ts","./src/sidepanel/actionlist.tsx","./src/sidepanel/app.tsx","./src/sidepanel/workflowlist.tsx","./src/sidepanel/main.tsx","./vite.config.ts"],"version":"5.9.3"}

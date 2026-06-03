@@ -4,6 +4,7 @@ import { buildElementFingerprint, primarySelector, resolveByFingerprint } from '
 
 let recording = false;
 let lastActionTime = Date.now();
+let replayRunToken = 0;
 
 // Debounced "type" buffering: we collapse a burst of keystrokes in one field
 // into a single type action when focus leaves or another action happens.
@@ -188,6 +189,10 @@ function stopRecording(): void {
   }
 }
 
+function stopReplay(): void {
+  replayRunToken += 1;
+}
+
 // --- Replay -----------------------------------------------------------------
 
 function sleep(ms: number): Promise<void> {
@@ -291,19 +296,24 @@ async function performAction(action: RecordedAction): Promise<void> {
 }
 
 async function runReplay(actions: RecordedAction[]): Promise<void> {
+  const runToken = ++replayRunToken;
   let cursor = await getCursor();
   for (; cursor < actions.length; cursor++) {
+    if (runToken !== replayRunToken) return;
     const action = actions[cursor];
     await sleep(Math.min(action.delay, 3000));
+    if (runToken !== replayRunToken) return;
+    // Persist the next step before firing the action so full-page navigations
+    // caused by clicks/submits can resume on the new document.
+    await setCursor(cursor + 1);
     const willNavigate = action.type === 'navigate' && action.value !== location.href;
     if (willNavigate) {
-      // Persist progress so replay resumes after the page reloads.
-      await setCursor(cursor + 1);
       await performAction(action);
       return; // page unloads here
     }
     await performAction(action);
   }
+  if (runToken !== replayRunToken) return;
   await setCursor(0);
   chrome.runtime.sendMessage({ type: 'REPLAY_FINISHED' } satisfies ExtMessage).catch(() => {});
 }
@@ -317,14 +327,35 @@ async function setCursor(value: number): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.replayCursor]: value });
 }
 
-async function getStatus(): Promise<RecordingStatus> {
-  const data = await chrome.storage.local.get(STORAGE_KEYS.status);
-  return (data[STORAGE_KEYS.status] as RecordingStatus) ?? 'idle';
-}
+type ContentSessionState = {
+  status: RecordingStatus;
+  shouldRecord: boolean;
+  shouldReplay: boolean;
+  actions: RecordedAction[];
+};
 
-async function getActions(): Promise<RecordedAction[]> {
-  const data = await chrome.storage.local.get(STORAGE_KEYS.actions);
-  return (data[STORAGE_KEYS.actions] as RecordedAction[]) ?? [];
+async function getContentSessionState(): Promise<ContentSessionState> {
+  try {
+    const response = (await chrome.runtime.sendMessage({
+      type: 'GET_CONTENT_SESSION_STATE',
+    } satisfies ExtMessage)) as ContentSessionState | undefined;
+
+    return (
+      response ?? {
+        status: 'idle',
+        shouldRecord: false,
+        shouldReplay: false,
+        actions: [],
+      }
+    );
+  } catch {
+    return {
+      status: 'idle',
+      shouldRecord: false,
+      shouldReplay: false,
+      actions: [],
+    };
+  }
 }
 
 // --- Message handling -------------------------------------------------------
@@ -337,6 +368,9 @@ chrome.runtime.onMessage.addListener((message: ExtMessage) => {
     case 'CONTENT_STOP_RECORDING':
       stopRecording();
       break;
+    case 'CONTENT_STOP_REPLAY':
+      stopReplay();
+      break;
     case 'CONTENT_REPLAY':
       void runReplay(message.actions);
       break;
@@ -345,12 +379,11 @@ chrome.runtime.onMessage.addListener((message: ExtMessage) => {
 
 // On (re)load, resume whatever the extension was doing on this tab.
 async function init(): Promise<void> {
-  const status = await getStatus();
-  if (status === 'recording') {
+  const session = await getContentSessionState();
+  if (session.shouldRecord) {
     startRecording();
-  } else if (status === 'replaying') {
-    const actions = await getActions();
-    if (actions.length) void runReplay(actions);
+  } else if (session.shouldReplay && session.actions.length) {
+    void runReplay(session.actions);
   }
 }
 

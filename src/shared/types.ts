@@ -53,24 +53,40 @@ export interface RecordedAction {
   timestamp: number;
 }
 
+export interface Workflow {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  startUrl: string;
+  steps: RecordedAction[];
+}
+
 // Messages exchanged between the parts of the extension.
 export type ExtMessage =
   | { type: 'START_RECORDING' }
   | { type: 'STOP_RECORDING' }
   | { type: 'CLEAR_RECORDING' }
-  | { type: 'START_REPLAY' }
+  | { type: 'REPLAY_WORKFLOW'; workflowId: string }
+  | { type: 'DELETE_WORKFLOW'; workflowId: string }
   | { type: 'STOP_REPLAY' }
   | { type: 'GET_STATE' }
+  | { type: 'GET_CONTENT_SESSION_STATE' }
   | { type: 'ACTION_RECORDED'; action: RecordedAction }
   | { type: 'REPLAY_FINISHED' }
-  | { type: 'STATE'; status: RecordingStatus; actions: RecordedAction[] }
+  | { type: 'STATE'; status: RecordingStatus; currentRecording: RecordedAction[]; workflows: Workflow[] }
   // Background -> content script commands.
   | { type: 'CONTENT_START_RECORDING' }
   | { type: 'CONTENT_STOP_RECORDING' }
+  | { type: 'CONTENT_STOP_REPLAY' }
   | { type: 'CONTENT_REPLAY'; actions: RecordedAction[] };
 
 export const STORAGE_KEYS = {
   actions: 'jidouka_actions',
   status: 'jidouka_status',
   replayCursor: 'jidouka_replay_cursor',
+  replayActions: 'jidouka_replay_actions',
+  workflows: 'jidouka_workflows',
+  recordingTabId: 'jidouka_recording_tab_id',
+  replayTabId: 'jidouka_replay_tab_id',
 } as const;
