@@ -1,6 +1,7 @@
 import type { ExtMessage, ElementFingerprint, RecordedAction, RecordingStatus } from '../shared/types';
-import { STORAGE_KEYS } from '../shared/types';
 import { buildElementFingerprint, primarySelector, resolveByFingerprint } from './fingerprint';
+
+const REPLAY_CURSOR_KEY = 'jidouka_replay_cursor';
 
 let recording = false;
 let lastActionTime = Date.now();
@@ -88,6 +89,7 @@ function flushPendingInput(): void {
 }
 
 function onClick(e: MouseEvent): void {
+  console.log('click', e);
   const target = e.target as Element | null;
   if (!target) return;
   // Commit any buffered typing before recording the click.
@@ -166,11 +168,12 @@ function startRecording(): void {
   recording = true;
   lastActionTime = Date.now();
   lastUrl = location.href;
-  document.addEventListener('click', onClick, true);
-  document.addEventListener('change', onChange, true);
-  document.addEventListener('input', onInput, true);
-  document.addEventListener('submit', onSubmit, true);
-  document.addEventListener('keydown', onKeydown, true);
+  console.info('[jidouka] recording armed on', location.href);
+  window.addEventListener('click', onClick, true);
+  window.addEventListener('change', onChange, true);
+  window.addEventListener('input', onInput, true);
+  window.addEventListener('submit', onSubmit, true);
+  window.addEventListener('keydown', onKeydown, true);
   urlPoll = window.setInterval(pollUrl, 500);
 }
 
@@ -178,11 +181,12 @@ function stopRecording(): void {
   if (!recording) return;
   flushPendingInput();
   recording = false;
-  document.removeEventListener('click', onClick, true);
-  document.removeEventListener('change', onChange, true);
-  document.removeEventListener('input', onInput, true);
-  document.removeEventListener('submit', onSubmit, true);
-  document.removeEventListener('keydown', onKeydown, true);
+  console.info('[jidouka] recording stopped on', location.href);
+  window.removeEventListener('click', onClick, true);
+  window.removeEventListener('change', onChange, true);
+  window.removeEventListener('input', onInput, true);
+  window.removeEventListener('submit', onSubmit, true);
+  window.removeEventListener('keydown', onKeydown, true);
   if (urlPoll != null) {
     clearInterval(urlPoll);
     urlPoll = null;
@@ -319,12 +323,12 @@ async function runReplay(actions: RecordedAction[]): Promise<void> {
 }
 
 async function getCursor(): Promise<number> {
-  const data = await chrome.storage.local.get(STORAGE_KEYS.replayCursor);
-  return (data[STORAGE_KEYS.replayCursor] as number) ?? 0;
+  const data = await chrome.storage.local.get(REPLAY_CURSOR_KEY);
+  return (data[REPLAY_CURSOR_KEY] as number) ?? 0;
 }
 
 async function setCursor(value: number): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEYS.replayCursor]: value });
+  await chrome.storage.local.set({ [REPLAY_CURSOR_KEY]: value });
 }
 
 type ContentSessionState = {
@@ -360,8 +364,11 @@ async function getContentSessionState(): Promise<ContentSessionState> {
 
 // --- Message handling -------------------------------------------------------
 
-chrome.runtime.onMessage.addListener((message: ExtMessage) => {
+chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse) => {
   switch (message.type) {
+    case 'PING':
+      sendResponse({ alive: true });
+      return;
     case 'CONTENT_START_RECORDING':
       startRecording();
       break;

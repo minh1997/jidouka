@@ -64,6 +64,7 @@ export interface Workflow {
 
 // Messages exchanged between the parts of the extension.
 export type ExtMessage =
+  | { type: 'PING' }
   | { type: 'START_RECORDING' }
   | { type: 'STOP_RECORDING' }
   | { type: 'CLEAR_RECORDING' }

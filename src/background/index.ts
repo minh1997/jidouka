@@ -98,6 +98,33 @@ async function sendToTab(tabId: number | null | undefined, msg: ExtMessage): Pro
   }
 }
 
+async function pingContentScript(tabId: number): Promise<boolean> {
+  try {
+    const response = (await chrome.tabs.sendMessage(tabId, { type: 'PING' } satisfies ExtMessage)) as
+      | { alive?: boolean }
+      | undefined;
+    return response?.alive === true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureContentScript(tabId: number): Promise<boolean> {
+  if (await pingContentScript(tabId)) return true;
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ['content.js'],
+    });
+    await sleep(100);
+    return await pingContentScript(tabId);
+  } catch (err) {
+    console.warn('[jidouka] content script injection failed', err);
+    return false;
+  }
+}
+
 async function getContentSessionState(tabId: number | undefined): Promise<{
   status: RecordingStatus;
   shouldRecord: boolean;
@@ -225,6 +252,7 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
         case 'START_RECORDING': {
           const tab = await getActiveTab();
           if (tab?.id == null) break;
+          if (!(await ensureContentScript(tab.id))) break;
           await Promise.all([
             setStatus('recording'),
             setRecordingTabId(tab.id),
@@ -267,6 +295,7 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
         case 'REPLAY_WORKFLOW': {
           const [workflows, tab] = await Promise.all([getWorkflows(), getActiveTab()]);
           if (tab?.id == null) break;
+          if (!(await ensureContentScript(tab.id))) break;
           const workflow = workflows.find((item) => item.id === message.workflowId);
           if (!workflow) break;
           await beginReplay(tab.id, workflow.steps);
@@ -328,7 +357,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
     // Re-arm recording on the new page so the recording session stays scoped
     // to the workflow tab across full navigations.
-    await sleep(300);
+    if (!(await ensureContentScript(tabId))) return;
     await sendToTab(tabId, { type: 'CONTENT_START_RECORDING' });
   })();
 });
